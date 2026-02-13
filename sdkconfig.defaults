@@ -1,0 +1,8 @@
+# Set the default LED GPIO to 2 instead of the Kconfig default of 8
+CONFIG_BLINK_GPIO=2
+
+# Set the default blink period to 500ms
+CONFIG_BLINK_PERIOD=500
+
+# Increase flash speed
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
