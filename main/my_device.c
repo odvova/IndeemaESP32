@@ -10,13 +10,7 @@
 
 static const char *TAG = "APP";
 
-#define ADC_MAX_VALUE 4095
-#define ZONE_LOW_TO_MID 1365
-#define ZONE_MID_TO_HIGH 2730
-#define ZONE_HYSTERESIS 120
-#define MIN_EFFECTIVE_SPAN 20
 #define BLINK_PERIOD_MS 400
-#define JOYSTICK_BUTTON_GPIO 6
 
 typedef enum {
     LED_MODE_BLINK = 0,
@@ -24,93 +18,6 @@ typedef enum {
 } led_mode_t;
 
 static volatile led_mode_t s_mode = LED_MODE_BLINK;
-
-typedef struct {
-    int min_seen;
-    int max_seen;
-    int filtered;
-    bool initialized;
-} axis_state_t;
-
-static int clamp_int(int value, int min_value, int max_value)
-{
-    if (value < min_value) {
-        return min_value;
-    }
-    if (value > max_value) {
-        return max_value;
-    }
-    return value;
-}
-
-static int zone_from_norm(int normalized, int previous_zone)
-{
-    if (previous_zone <= 0) {
-        if (normalized < ZONE_LOW_TO_MID) {
-            return 0;
-        }
-        if (normalized < ZONE_MID_TO_HIGH) {
-            return 1;
-        }
-        return 2;
-    }
-
-    if (previous_zone == 0) {
-        if (normalized > (ZONE_LOW_TO_MID + ZONE_HYSTERESIS)) {
-            return 1;
-        }
-        return 0;
-    }
-
-    if (previous_zone == 1) {
-        if (normalized < (ZONE_LOW_TO_MID - ZONE_HYSTERESIS)) {
-            return 0;
-        }
-        if (normalized > (ZONE_MID_TO_HIGH + ZONE_HYSTERESIS)) {
-            return 2;
-        }
-        return 1;
-    }
-
-    if (normalized < (ZONE_MID_TO_HIGH - ZONE_HYSTERESIS)) {
-        return 1;
-    }
-    return 2;
-}
-
-static int normalize_axis(axis_state_t *state, int sample)
-{
-    if (!state->initialized) {
-        state->initialized = true;
-        state->filtered = sample;
-        state->min_seen = sample;
-        state->max_seen = sample;
-    } else {
-        state->filtered = (state->filtered * 7 + sample) / 8;
-        if (state->filtered < state->min_seen) {
-            state->min_seen = state->filtered;
-        }
-        if (state->filtered > state->max_seen) {
-            state->max_seen = state->filtered;
-        }
-    }
-
-    int span = state->max_seen - state->min_seen;
-    if (span < MIN_EFFECTIVE_SPAN) {
-        return ADC_MAX_VALUE / 2;
-    }
-
-    int normalized = (state->filtered - state->min_seen) * ADC_MAX_VALUE / span;
-    return clamp_int(normalized, 0, ADC_MAX_VALUE);
-}
-
-static int axis_span(const axis_state_t *state)
-{
-    if (!state->initialized) {
-        return 0;
-    }
-    return state->max_seen - state->min_seen;
-}
 
 static void on_button_press(void *user_data)
 {
@@ -140,18 +47,15 @@ static void on_button_double_click(void *user_data)
 
 void app_main(void)
 {
-    int x_raw = 0;
-    int y_raw = 0;
-    int x_norm = 0;
-    int y_norm = 0;
-    int color_zone = 1;
-    int brightness_zone = 1;
-    bool sw_pressed = false;
     bool blink_on = false;
     TickType_t last_blink_tick = xTaskGetTickCount();
     TickType_t last_log = xTaskGetTickCount();
-    axis_state_t x_state = {0};
-    axis_state_t y_state = {0};
+    joystick_sample_t sample = {0};
+    joystick_led_state_t led_state = {0};
+    joystick_runtime_t joystick_runtime = {0};
+    int joystick_button_gpio = joystick_get_switch_gpio();
+    button_handle_t joystick_button = NULL;
+    const button_config_t button_config = BUTTON_COMPONENT_CONFIG_DEFAULT(joystick_button_gpio, 0);
     const button_callbacks_t button_callbacks = {
         .on_press = on_button_press,
         .on_long_press = on_button_long_press,
@@ -161,17 +65,17 @@ void app_main(void)
     };
 
     led_ws2812_init(CONFIG_BLINK_GPIO);
-    configure_joystick();
-    ESP_ERROR_CHECK(button_component_init(JOYSTICK_BUTTON_GPIO, 0, &button_callbacks));
+    ESP_ERROR_CHECK(joystick_init());
+    joystick_runtime_reset(&joystick_runtime);
+    ESP_ERROR_CHECK(button_component_create(&button_config, &button_callbacks, &joystick_button));
 
     while (1) {
         uint8_t red = 0;
         uint8_t green = 0;
         uint8_t blue = 0;
-        uint8_t brightness = 0;
         TickType_t now = xTaskGetTickCount();
 
-        read_joystick(&x_raw, &y_raw, &sw_pressed);
+        (void)joystick_read_sample(&sample);
 
         if (s_mode == LED_MODE_BLINK) {
             if ((now - last_blink_tick) >= pdMS_TO_TICKS(BLINK_PERIOD_MS)) {
@@ -186,7 +90,7 @@ void app_main(void)
             }
 
             if ((now - last_log) >= pdMS_TO_TICKS(1000)) {
-                ESP_LOGI(TAG, "mode=BLINK sw=%d", (int)sw_pressed);
+                ESP_LOGI(TAG, "mode=BLINK sw=%d", (int)sample.sw_pressed);
                 last_log = now;
             }
 
@@ -194,36 +98,12 @@ void app_main(void)
             continue;
         }
 
-        x_norm = normalize_axis(&x_state, x_raw);
-        y_norm = normalize_axis(&y_state, y_raw);
+        joystick_map_sample_to_led(&joystick_runtime, &sample, &led_state);
+        red = led_state.red;
+        green = led_state.green;
+        blue = led_state.blue;
 
-        color_zone = zone_from_norm(x_norm, color_zone);
-        if (color_zone == 0) {
-            red = 255;
-        } else if (color_zone == 1) {
-            green = 255;
-        } else {
-            blue = 255;
-        }
-
-        if (axis_span(&y_state) < MIN_EFFECTIVE_SPAN) {
-            brightness_zone = 1;
-        } else {
-            brightness_zone = zone_from_norm(y_norm, brightness_zone);
-        }
-        if (brightness_zone == 0) {
-            brightness = 0;
-        } else if (brightness_zone == 1) {
-            brightness = 128;
-        } else {
-            brightness = 255;
-        }
-
-        red = (uint8_t)((red * brightness) / 255);
-        green = (uint8_t)((green * brightness) / 255);
-        blue = (uint8_t)((blue * brightness) / 255);
-
-        if (brightness == 0) {
+        if (!led_state.led_on) {
             led_ws2812_clear();
         } else {
             led_ws2812_set_color(red, green, blue);
@@ -231,7 +111,8 @@ void app_main(void)
 
         if ((now - last_log) >= pdMS_TO_TICKS(500)) {
             ESP_LOGI(TAG, "mode=JOYSTICK raw=(%d,%d) norm=(%d,%d) span=(%d,%d) sw=%d -> rgb=(%u,%u,%u) br=%u",
-                     x_raw, y_raw, x_norm, y_norm, axis_span(&x_state), axis_span(&y_state), (int)sw_pressed, red, green, blue, brightness);
+                     led_state.x_raw, led_state.y_raw, led_state.x_norm, led_state.y_norm, led_state.x_span, led_state.y_span,
+                     (int)led_state.sw_pressed, red, green, blue, led_state.brightness);
             last_log = now;
         }
 

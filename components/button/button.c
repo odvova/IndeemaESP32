@@ -3,65 +3,62 @@
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include <stdlib.h>
 
 static const char *TAG = "BUTTON";
 
 #define BUTTON_TASK_STACK_SIZE 3072
 #define BUTTON_TASK_PRIORITY 5
-#define BUTTON_POLL_MS 10
-#define BUTTON_DEBOUNCE_MS 30
-#define BUTTON_LONG_PRESS_MS 1000
-#define BUTTON_DOUBLE_CLICK_MS 350
+typedef struct button_component {
+    TaskHandle_t task;
+    bool running;
+    bool initialized;
+    button_config_t config;
+    button_callbacks_t callbacks;
+} button_component_t;
 
-static TaskHandle_t s_button_task = NULL;
-static bool s_running = false;
-static bool s_initialized = false;
-static int s_gpio_num = -1;
-static uint8_t s_active_level = 0;
-static button_callbacks_t s_callbacks = {0};
-
-static bool button_raw_pressed(void)
+static bool button_raw_pressed(const button_component_t *ctx)
 {
-    return (gpio_get_level(s_gpio_num) == (int)s_active_level);
+    return (gpio_get_level(ctx->config.gpio_num) == (int)ctx->config.active_level);
 }
 
-static void call_press_cb(void)
+static void call_press_cb(button_component_t *ctx)
 {
-    ESP_LOGI(TAG, "BUTTON_PRESS");
-    if (s_callbacks.on_press) {
-        s_callbacks.on_press(s_callbacks.user_data);
+    ESP_LOGI(TAG, "GPIO%d BUTTON_PRESS", ctx->config.gpio_num);
+    if (ctx->callbacks.on_press) {
+        ctx->callbacks.on_press(ctx->callbacks.user_data);
     }
 }
 
-static void call_long_press_cb(void)
+static void call_long_press_cb(button_component_t *ctx)
 {
-    ESP_LOGI(TAG, "BUTTON_LONG_PRESS");
-    if (s_callbacks.on_long_press) {
-        s_callbacks.on_long_press(s_callbacks.user_data);
+    ESP_LOGI(TAG, "GPIO%d BUTTON_LONG_PRESS", ctx->config.gpio_num);
+    if (ctx->callbacks.on_long_press) {
+        ctx->callbacks.on_long_press(ctx->callbacks.user_data);
     }
 }
 
-static void call_click_cb(void)
+static void call_click_cb(button_component_t *ctx)
 {
-    ESP_LOGI(TAG, "BUTTON_CLICK");
-    if (s_callbacks.on_click) {
-        s_callbacks.on_click(s_callbacks.user_data);
+    ESP_LOGI(TAG, "GPIO%d BUTTON_CLICK", ctx->config.gpio_num);
+    if (ctx->callbacks.on_click) {
+        ctx->callbacks.on_click(ctx->callbacks.user_data);
     }
 }
 
-static void call_double_click_cb(void)
+static void call_double_click_cb(button_component_t *ctx)
 {
-    ESP_LOGI(TAG, "BUTTON_DOUBLE_CLICK");
-    if (s_callbacks.on_double_click) {
-        s_callbacks.on_double_click(s_callbacks.user_data);
+    ESP_LOGI(TAG, "GPIO%d BUTTON_DOUBLE_CLICK", ctx->config.gpio_num);
+    if (ctx->callbacks.on_double_click) {
+        ctx->callbacks.on_double_click(ctx->callbacks.user_data);
     }
 }
 
 static void button_task(void *arg)
 {
-    (void)arg;
+    button_component_t *ctx = (button_component_t *)arg;
 
-    bool raw_state = button_raw_pressed();
+    bool raw_state = button_raw_pressed(ctx);
     bool debounced_state = raw_state;
     TickType_t raw_change_tick = xTaskGetTickCount();
     TickType_t press_start_tick = 0;
@@ -69,22 +66,22 @@ static void button_task(void *arg)
     bool long_press_sent = false;
     uint8_t click_count = 0;
 
-    while (s_running) {
+    while (ctx->running) {
         TickType_t now = xTaskGetTickCount();
-        bool raw_now = button_raw_pressed();
+        bool raw_now = button_raw_pressed(ctx);
 
         if (raw_now != raw_state) {
             raw_state = raw_now;
             raw_change_tick = now;
         }
 
-        if ((now - raw_change_tick) >= pdMS_TO_TICKS(BUTTON_DEBOUNCE_MS) && debounced_state != raw_state) {
+        if ((now - raw_change_tick) >= pdMS_TO_TICKS(ctx->config.debounce_ms) && debounced_state != raw_state) {
             debounced_state = raw_state;
 
             if (debounced_state) {
                 press_start_tick = now;
                 long_press_sent = false;
-                call_press_cb();
+                call_press_cb(ctx);
             } else {
                 if (!long_press_sent) {
                     click_count++;
@@ -94,86 +91,104 @@ static void button_task(void *arg)
         }
 
         if (debounced_state && !long_press_sent &&
-            (now - press_start_tick) >= pdMS_TO_TICKS(BUTTON_LONG_PRESS_MS)) {
+            (now - press_start_tick) >= pdMS_TO_TICKS(ctx->config.long_press_ms)) {
             long_press_sent = true;
             click_count = 0;
-            call_long_press_cb();
+            call_long_press_cb(ctx);
         }
 
         if (!debounced_state && click_count > 0 &&
-            (now - last_release_tick) >= pdMS_TO_TICKS(BUTTON_DOUBLE_CLICK_MS)) {
+            (now - last_release_tick) >= pdMS_TO_TICKS(ctx->config.double_click_ms)) {
             if (click_count == 1) {
-                call_click_cb();
+                call_click_cb(ctx);
             } else {
-                call_double_click_cb();
+                call_double_click_cb(ctx);
             }
             click_count = 0;
         }
 
-        vTaskDelay(pdMS_TO_TICKS(BUTTON_POLL_MS));
+        vTaskDelay(pdMS_TO_TICKS(ctx->config.poll_ms));
     }
 
-    s_button_task = NULL;
+    ctx->task = NULL;
     vTaskDelete(NULL);
 }
 
-esp_err_t button_component_init(int gpio_num, uint8_t active_level, const button_callbacks_t *callbacks)
+esp_err_t button_component_create(const button_config_t *config,
+                                  const button_callbacks_t *callbacks,
+                                  button_handle_t *out_handle)
 {
-    if (callbacks == NULL || gpio_num < 0) {
+    if (config == NULL || callbacks == NULL || out_handle == NULL || config->gpio_num < 0) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    if (s_initialized) {
-        ESP_LOGW(TAG, "Button already initialized");
-        return ESP_OK;
+    if (config->poll_ms == 0 || config->debounce_ms == 0 || config->double_click_ms == 0) {
+        return ESP_ERR_INVALID_ARG;
     }
 
+    button_component_t *ctx = calloc(1, sizeof(*ctx));
+    if (ctx == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    ctx->config = *config;
+    ctx->callbacks = *callbacks;
+
     gpio_config_t io_cfg = {
-        .pin_bit_mask = (1ULL << gpio_num),
+        .pin_bit_mask = (1ULL << config->gpio_num),
         .mode = GPIO_MODE_INPUT,
-        .pull_up_en = (active_level == 0) ? GPIO_PULLUP_ENABLE : GPIO_PULLUP_DISABLE,
-        .pull_down_en = (active_level == 0) ? GPIO_PULLDOWN_DISABLE : GPIO_PULLDOWN_ENABLE,
+        .pull_up_en = (config->active_level == 0) ? GPIO_PULLUP_ENABLE : GPIO_PULLUP_DISABLE,
+        .pull_down_en = (config->active_level == 0) ? GPIO_PULLDOWN_DISABLE : GPIO_PULLDOWN_ENABLE,
         .intr_type = GPIO_INTR_DISABLE,
     };
 
     esp_err_t ret = gpio_config(&io_cfg);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to configure GPIO %d (%s)", gpio_num, esp_err_to_name(ret));
+        ESP_LOGE(TAG, "Failed to configure GPIO %d (%s)", config->gpio_num, esp_err_to_name(ret));
+        free(ctx);
         return ret;
     }
 
-    s_gpio_num = gpio_num;
-    s_active_level = active_level;
-    s_callbacks = *callbacks;
-    s_running = true;
+    ctx->running = true;
 
     BaseType_t task_ok = xTaskCreate(button_task,
                                      "button_task",
                                      BUTTON_TASK_STACK_SIZE,
-                                     NULL,
+                                     ctx,
                                      BUTTON_TASK_PRIORITY,
-                                     &s_button_task);
+                                     &ctx->task);
     if (task_ok != pdPASS) {
-        s_running = false;
-        s_button_task = NULL;
+        ctx->running = false;
+        ctx->task = NULL;
+        free(ctx);
         return ESP_ERR_NO_MEM;
     }
 
-    s_initialized = true;
-    ESP_LOGI(TAG, "Button initialized on GPIO %d", gpio_num);
+    ctx->initialized = true;
+    *out_handle = ctx;
+    ESP_LOGI(TAG, "Button initialized on GPIO %d", config->gpio_num);
     return ESP_OK;
 }
 
-void button_component_deinit(void)
+void button_component_destroy(button_handle_t handle)
 {
-    if (s_initialized) {
-        s_running = false;
-        ESP_LOGI(TAG, "Button deinitialized");
-        s_initialized = false;
+    button_component_t *ctx = (button_component_t *)handle;
+    if (ctx == NULL || !ctx->initialized) {
+        return;
     }
+
+    ctx->running = false;
+    while (ctx->task != NULL) {
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+
+    ESP_LOGI(TAG, "Button deinitialized on GPIO %d", ctx->config.gpio_num);
+    ctx->initialized = false;
+    free(ctx);
 }
 
-bool button_component_is_initialized(void)
+bool button_component_is_initialized(button_handle_t handle)
 {
-    return s_initialized;
+    button_component_t *ctx = (button_component_t *)handle;
+    return (ctx != NULL && ctx->initialized);
 }
