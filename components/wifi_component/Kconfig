@@ -1,0 +1,27 @@
+menu "Wi-Fi Component Configuration"
+
+    config WIFI_COMPONENT_STA_SSID
+        string "Wi-Fi STA SSID"
+        default ""
+        help
+            Target SSID for station mode. Keep empty to disable STA when using defaults.
+
+    config WIFI_COMPONENT_STA_PASS
+        string "Wi-Fi STA Password"
+        default ""
+        help
+            Target password for station mode.
+
+    config WIFI_COMPONENT_AP_SSID
+        string "Wi-Fi AP SSID"
+        default "my-device-kozariz"
+        help
+            SoftAP SSID.
+
+    config WIFI_COMPONENT_AP_PASS
+        string "Wi-Fi AP Password"
+        default "12345678"
+        help
+            SoftAP password. Use at least 8 chars for WPA2, or leave empty for open AP.
+
+endmenu
