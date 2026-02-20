@@ -1,5 +1,11 @@
 #ifndef JOYSTICK_H
 #define JOYSTICK_H
-// Helper to start the joystick task
-void start_joystick_task(void);
+
+#include <stdbool.h>
+#include "esp_adc/adc_oneshot.h"
+
+void configure_joystick(void);
+
+void read_joystick(int *x, int *y, bool *sw_pressed);
+
 #endif
