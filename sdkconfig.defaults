@@ -1,5 +1,9 @@
 # Set the default LED GPIO to 2 instead of the Kconfig default of 8
 CONFIG_BLINK_GPIO=2
+CONFIG_WIFI_COMPONENT_STA_SSID=""
+CONFIG_WIFI_COMPONENT_STA_PASS=""
+CONFIG_WIFI_COMPONENT_AP_SSID="my-device-kozariz"
+CONFIG_WIFI_COMPONENT_AP_PASS="12345678"
 
 # Set the default blink period to 500ms
 CONFIG_BLINK_PERIOD=500
