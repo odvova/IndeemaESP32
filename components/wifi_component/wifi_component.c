@@ -55,6 +55,11 @@ typedef struct {
     char ap_ssid[WIFI_SSID_MAX_LEN + 1];
     char ap_password[WIFI_PASS_MAX_LEN + 1];
     char internet_host[WIFI_HOST_MAX_LEN + 1];
+    bool manual_led_override;
+    uint8_t manual_led_red;
+    uint8_t manual_led_green;
+    uint8_t manual_led_blue;
+    TickType_t manual_led_until_tick;
 } wifi_component_runtime_t;
 
 static wifi_component_runtime_t s_runtime = {0};
@@ -126,6 +131,15 @@ static wifi_led_state_t compute_led_state(void)
 static void set_led(uint8_t red, uint8_t green, uint8_t blue)
 {
     (void)led_ws2812_set_color(red, green, blue);
+}
+
+static bool is_manual_led_override_active(TickType_t now)
+{
+    if (!s_runtime.manual_led_override) {
+        return false;
+    }
+
+    return ((int32_t)(s_runtime.manual_led_until_tick - now) > 0);
 }
 
 static void apply_led_state(wifi_led_state_t state)
@@ -425,7 +439,15 @@ static void wifi_component_task(void *arg)
             ESP_LOGI(TAG, "LED state changed to %d", (int)s_runtime.state);
         }
 
-        apply_led_state(s_runtime.state);
+        if (is_manual_led_override_active(now)) {
+            set_led(s_runtime.manual_led_red, s_runtime.manual_led_green, s_runtime.manual_led_blue);
+        } else {
+            if (s_runtime.manual_led_override) {
+                s_runtime.manual_led_override = false;
+                ESP_LOGI(TAG, "Manual LED override expired; resuming Wi-Fi LED state");
+            }
+            apply_led_state(s_runtime.state);
+        }
         vTaskDelay(pdMS_TO_TICKS(WIFI_TASK_LOOP_MS));
     }
 
@@ -746,4 +768,72 @@ esp_err_t wifi_component_set_sta_credentials(const char *ssid, const char *passw
 bool wifi_component_time_is_synced(void)
 {
     return s_runtime.time_synced;
+}
+
+bool wifi_component_has_ip(void)
+{
+    return s_runtime.sta_has_ip;
+}
+
+int8_t wifi_component_get_rssi(void)
+{
+    if (!s_runtime.sta_has_ip) {
+        return 0;
+    }
+    
+    wifi_ap_record_t ap_info;
+    esp_err_t ret = esp_wifi_sta_get_ap_info(&ap_info);
+    if (ret != ESP_OK) {
+        return 0;
+    }
+    
+    return ap_info.rssi;
+}
+
+bool wifi_component_is_sntp_synced(void)
+{
+    return s_runtime.time_synced;
+}
+
+const char *wifi_component_get_led_state_name(void)
+{
+    switch (s_runtime.state) {
+        case WIFI_LED_STATE_OFF:
+            return "off";
+        case WIFI_LED_STATE_STA_CONNECTING:
+            return "sta_connecting";
+        case WIFI_LED_STATE_STA_ERROR:
+            return "sta_error";
+        case WIFI_LED_STATE_STA_IP_RECEIVED:
+            return "sta_ip_received";
+        case WIFI_LED_STATE_STA_INTERNET_OK:
+            return "sta_internet_ok";
+        case WIFI_LED_STATE_AP_STARTED:
+            return "ap_started";
+        case WIFI_LED_STATE_AP_CLIENT_CONNECTED:
+            return "ap_client_connected";
+        default:
+            return "unknown";
+    }
+}
+
+esp_err_t wifi_component_set_led_override(uint8_t red, uint8_t green, uint8_t blue, uint32_t hold_ms)
+{
+    if (!s_runtime.started) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (hold_ms == 0) {
+        s_runtime.manual_led_override = false;
+        return ESP_OK;
+    }
+
+    s_runtime.manual_led_red = red;
+    s_runtime.manual_led_green = green;
+    s_runtime.manual_led_blue = blue;
+    s_runtime.manual_led_until_tick = xTaskGetTickCount() + pdMS_TO_TICKS(hold_ms);
+    s_runtime.manual_led_override = true;
+
+    set_led(red, green, blue);
+    return ESP_OK;
 }

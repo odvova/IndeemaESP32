@@ -166,8 +166,9 @@ static esp_err_t http_wifi_post_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
-    ESP_LOGI(TAG, "Credentials accepted, device now in AP+STA mode");
-    return httpd_resp_sendstr(req, "Saved! Device is now in AP+STA mode. Connecting to home network...");
+    ESP_LOGI(TAG, "Credentials accepted, switching to AP+STA mode");
+    (void)wifi_component_set_mode(WIFI_COMPONENT_MODE_APSTA);
+    return httpd_resp_sendstr(req, "Saved. Switched to AP+STA mode. Both networks active!");
 }
 
 static esp_err_t http_mode_post_handler(httpd_req_t *req)

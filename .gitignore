@@ -8,6 +8,7 @@ sdkconfig.old
 # Components downloaded from the ESP Registry
 managed_components/
 dependencies.lock
+mqttx-cli-linux-x64
 
 # IDE specific files
 .vscode/

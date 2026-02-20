@@ -3,6 +3,7 @@
 #include "esp_log.h"
 #include "wifi_component.h"
 #include "http_config.h"
+#include "mqtt_component.h"
 #include "joystick.h"
 // #include "led_WS2812.h"
 // #include "joystick.h"
@@ -78,11 +79,15 @@ void app_main(void)
     joystick_sample_t joystick_sample = {0};
     TickType_t last_mode_switch_tick = 0;
     bool ap_enabled_last = false;
+    bool mqtt_started = false;
 
     wifi_config.initial_mode = WIFI_COMPONENT_MODE_AP;
 
     ESP_ERROR_CHECK(joystick_init());
     ESP_ERROR_CHECK(wifi_component_start(&wifi_config));
+    
+    // Initialize MQTT component (doesn't start connection yet)
+    mqtt_component_init();
 
     while (1) {
         // Legacy loop block (disabled):
@@ -156,6 +161,19 @@ void app_main(void)
             ESP_LOGI(TAG, "HTTP config server stopped");
         }
         ap_enabled_last = ap_enabled_now;
+        
+        bool has_ip = wifi_component_has_ip();
+        if (has_ip && !mqtt_started) {
+            // STA got IP, start MQTT
+            mqtt_component_start();
+            mqtt_started = true;
+            ESP_LOGI(TAG, "MQTT client started");
+        } else if (!has_ip && mqtt_started) {
+            // STA lost IP, stop MQTT
+            mqtt_component_stop();
+            mqtt_started = false;
+            ESP_LOGI(TAG, "MQTT client stopped");
+        }
 
         if (joystick_read_sample(&joystick_sample) == ESP_OK) {
             TickType_t now = xTaskGetTickCount();

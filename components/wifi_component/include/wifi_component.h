@@ -64,4 +64,33 @@ esp_err_t wifi_component_set_mode(wifi_component_mode_t mode);
 esp_err_t wifi_component_set_sta_credentials(const char *ssid, const char *password);
 bool wifi_component_time_is_synced(void);
 
+/**
+ * @brief Check if STA interface has received an IP address
+ */
+bool wifi_component_has_ip(void);
+
+/**
+ * @brief Get current RSSI (Received Signal Strength Indicator) for STA connection
+ * @return RSSI in dBm, 0 if not connected
+ */
+int8_t wifi_component_get_rssi(void);
+
+/**
+ * @brief Check if SNTP time synchronization is complete
+ */
+bool wifi_component_is_sntp_synced(void);
+
+/**
+ * @brief Get LED state as human-readable string
+ */
+const char *wifi_component_get_led_state_name(void);
+
+/**
+ * @brief Temporarily override Wi-Fi LED state for a fixed duration.
+ *
+ * During the override window, Wi-Fi status LED updates are paused and the
+ * provided color is shown. After timeout, normal Wi-Fi LED behavior resumes.
+ */
+esp_err_t wifi_component_set_led_override(uint8_t red, uint8_t green, uint8_t blue, uint32_t hold_ms);
+
 #endif

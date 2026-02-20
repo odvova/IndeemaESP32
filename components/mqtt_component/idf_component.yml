@@ -1,0 +1,3 @@
+version: "0.1.0"
+description: "MQTT client component for ESP32 with telemetry and command handling"
+
